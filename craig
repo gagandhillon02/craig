@@ -43,7 +43,7 @@ verify_build() {
   python3 - "$work" <<'PY'
 import hashlib,json,pathlib,subprocess,sys
 w=pathlib.Path(sys.argv[1]); receipt=json.loads((w/'build.json').read_text())
-sha=subprocess.check_output(['git','-C',str(w/'source'),'rev-parse','HEAD'],text=True).strip()
+sha=subprocess.check_output(['git','-C',str(w/'source'),'rev-parse','HEAD'],universal_newlines=True).strip()
 assert sha==receipt['source'], 'Source changed since build; rebuild first'
 assert hashlib.sha256((w/'values-ecr.generated.yaml').read_bytes()).hexdigest()==receipt['values_sha256'], 'Build values changed or build incomplete; rebuild first'
 PY
@@ -115,7 +115,7 @@ build() {
     bash "$root/scripts/build-push-ecr-images.sh"
     python3 - "$work" <<'PY'
 import hashlib,json,pathlib,subprocess,sys
-w=pathlib.Path(sys.argv[1]); sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+w=pathlib.Path(sys.argv[1]); sha=subprocess.check_output(['git','rev-parse','HEAD'],universal_newlines=True).strip()
 (w/'build.json').write_text(json.dumps({'source':sha,'values_sha256':hashlib.sha256((w/'values-ecr.generated.yaml').read_bytes()).hexdigest()}))
 PY
 }
