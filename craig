@@ -110,6 +110,9 @@ build() {
     account
     repositories
     [[ -z $(git -C "$source_dir" status --porcelain) ]] || { echo 'Source must be clean.' >&2; exit 1; }
+    # Docker COPY keeps file modes, and umask 077 checks files out owner-only; images
+    # that run as non-root users (e.g. RabbitMQ) cannot read them. .work stays 0700.
+    chmod -R go+rX,go-w "$source_dir"
     export IMAGE_TAG="$(git -C "$source_dir" rev-parse HEAD)-$(date -u +%Y%m%d%H%M%S)"
     cd "$source_dir"
     bash "$root/scripts/build-push-ecr-images.sh"
