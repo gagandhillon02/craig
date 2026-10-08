@@ -93,10 +93,15 @@ fetch() {
       git -C "$source_dir" fetch --depth 1 origin main
       git -C "$source_dir" checkout --detach FETCH_HEAD
     fi
-    # Git LFS is only required when main tracks files with it.
+    # Git LFS is only required when main tracks build inputs with it; docs/ and tests/e2e/ are not built.
     if git -C "$source_dir" grep -q 'filter=lfs' -- '*.gitattributes'; then
-      git lfs version >/dev/null 2>&1 || { echo 'Source uses Git LFS but git-lfs is not installed on this server.' >&2; exit 1; }
-      git -C "$source_dir" lfs pull
+      if git lfs version >/dev/null 2>&1; then
+        git -C "$source_dir" lfs pull
+      else
+        lfs_build_files=$(git -C "$source_dir" ls-files | git -C "$source_dir" check-attr --stdin filter | awk -F': ' '$3 == "lfs" && $1 !~ /^(docs|tests\/e2e)\// {print $1}')
+        [[ -z $lfs_build_files ]] || { printf 'Source uses Git LFS for build files but git-lfs is not installed:\n%s\n' "$lfs_build_files" >&2; exit 1; }
+        echo 'Git LFS files are docs/ and tests/e2e/ only; continuing without git-lfs.' >&2
+      fi
     fi
     git -C "$source_dir" rev-parse HEAD
 }
