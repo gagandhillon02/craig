@@ -18,7 +18,7 @@ cases.internal.example.gov host is retained as-is; it is not a newly configured 
 ## Prerequisites
 
 Run on the organization build server with Docker/Buildx running, AWS CLI, Helm,
-kubectl, Git and Git LFS, Python 3 with PyYAML, OpenSSL and Bash. GitLab main must
+kubectl, Git (Git LFS only if main uses it), Python 3 with PyYAML, OpenSSL and Bash. GitLab main must
 be readable. The existing kubeconfig must contain context:
 arn:aws:eks:us-east-1:533331890675:cluster/shines-dev-eks-cluster
 

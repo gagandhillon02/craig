@@ -55,7 +55,6 @@ preflight() {
     python3 -c 'import yaml' || { echo 'Python dependency missing: PyYAML' >&2; return 1; }
     docker info >/dev/null
     docker buildx version >/dev/null
-    git lfs version >/dev/null
     helm lint "$CRAIG_CHART_DIR" -f "$CRAIG_VALUES_FILE"
     connect
     repositories
@@ -71,6 +70,11 @@ fetch() {
       [[ -z $(git -C "$source_dir" status --porcelain) ]] || { echo 'Source has local changes.' >&2; exit 1; }
       git -C "$source_dir" fetch --depth 1 origin main
       git -C "$source_dir" checkout --detach FETCH_HEAD
+    fi
+    # Git LFS is only required when main tracks files with it.
+    if git -C "$source_dir" grep -q 'filter=lfs' -- '*.gitattributes'; then
+      git lfs version >/dev/null 2>&1 || { echo 'Source uses Git LFS but git-lfs is not installed on this server.' >&2; exit 1; }
+      git -C "$source_dir" lfs pull
     fi
     git -C "$source_dir" rev-parse HEAD
 }
