@@ -1,0 +1,569 @@
+{{- $root := . -}}
+{{- $dbs := dict "craig-rules" "craig_rules" "craig-cases" "craig_cases" "craig-placement" "craig_placement" "craig-exchange" "craig_exchange" "craig-financial" "craig_financial" "craig-reporting" "craig_reporting" "craig-security" "craig_security" "craig-intake" "craig_intake" "craig-composition" "craig_composition" -}}
+{{- range $name, $svc := .Values.services }}
+{{- if and (ne $name "craig-web") (ne $svc.enabled false) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "craig.namespace" $root }}
+spec:
+  ports:
+    - name: http
+      port: {{ $svc.port }}
+      targetPort: {{ $svc.port }}
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "craig.namespace" $root }}
+spec:
+  progressDeadlineSeconds: 1500
+  replicas: {{ $svc.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+    spec:
+      {{- include "craig.imagePullSecrets" $root | nindent 6 }}
+      initContainers:
+        {{- if ne $name "craig-intake" }}
+        - name: wait-for-postgres
+          image: {{ $root.Values.postgres.image | quote }}
+          imagePullPolicy: {{ $root.Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h {{ include "craig.postgresHost" $root }} -U {{ $root.Values.postgres.user }}; do
+                sleep 3
+              done
+        - name: migrate
+          image: {{ include "craig.image" (dict "Values" $root.Values "name" $name) | quote }}
+          imagePullPolicy: {{ $root.Values.images.pullPolicy }}
+          args: ["migrate"]
+          env:
+            - name: {{ upper (replace "-" "_" $name) }}__DATABASE_URL
+              value: {{ include "craig.ownerDatabaseUrl" (dict "root" $root "name" $name "db" (get $dbs $name)) | quote }}
+            - name: {{ upper (replace "-" "_" $name) }}__JURISDICTION
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_JURISDICTION
+            - name: CRAIG__ACTIVE_STATE_BUNDLES
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_ACTIVE_STATE_BUNDLES
+            - name: CRAIG_FIELD_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_FIELD_ENCRYPTION_KEY
+        - name: wait-for-rabbitmq
+          image: {{ include "craig.image" (dict "Values" $root.Values "name" "craig-seed") | quote }}
+          imagePullPolicy: {{ $root.Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://craig-rabbitmq:15672 >/dev/null; do
+                sleep 3
+              done
+        {{- end }}
+        - name: wait-for-keycloak
+          image: {{ include "craig.image" (dict "Values" $root.Values "name" "craig-seed") | quote }}
+          imagePullPolicy: {{ $root.Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://craig-keycloak:8080/realms/craig >/dev/null; do
+                sleep 3
+              done
+        {{- range $dep := $svc.waitFor }}
+        {{- $depName := index (splitList ":" $dep) 0 }}
+        {{- $depSvc := index $root.Values.services $depName }}
+        {{- if or (not $depSvc) (ne $depSvc.enabled false) }}
+        - name: wait-for-{{ replace ":" "-" $dep }}
+          image: {{ include "craig.image" (dict "Values" $root.Values "name" "craig-seed") | quote }}
+          imagePullPolicy: {{ $root.Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://{{ $dep }}/readyz >/dev/null; do
+                sleep 3
+              done
+        {{- end }}
+        {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "craig.image" (dict "Values" $root.Values "name" $name) | quote }}
+          imagePullPolicy: {{ $root.Values.images.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: craig-secrets
+          ports:
+            - containerPort: {{ $svc.port }}
+          env:
+            - name: {{ upper (replace "-" "_" $name) }}__PORT
+              value: {{ $svc.port | quote }}
+            {{- if ne $name "craig-intake" }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: POSTGRES_PASSWORD
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: RABBITMQ_PASSWORD
+            - name: {{ upper (replace "-" "_" $name) }}__DATABASE_URL
+              value: {{ include "craig.appDatabaseUrl" (dict "root" $root "name" $name "db" (get $dbs $name)) | quote }}
+            - name: {{ upper (replace "-" "_" $name) }}__RABBITMQ_URL
+              value: {{ printf "amqp://%s:%s@%s:5672/%%2f" $name $name (include "craig.rabbitmqHost" $root) | quote }}
+            {{- end }}
+            - name: {{ upper (replace "-" "_" $name) }}__KEYCLOAK_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_ISSUER
+            - name: {{ upper (replace "-" "_" $name) }}__KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_URL
+            - name: {{ upper (replace "-" "_" $name) }}__OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_ISSUER
+            - name: {{ upper (replace "-" "_" $name) }}__OIDC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_URL
+            - name: {{ upper (replace "-" "_" $name) }}__OIDC_INTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_URL
+            - name: {{ upper (replace "-" "_" $name) }}__JURISDICTION
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_JURISDICTION
+            - name: {{ upper (replace "-" "_" $name) }}__ADMIN_UNIT_LABEL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_ADMIN_UNIT_LABEL
+            - name: {{ upper (replace "-" "_" $name) }}__TOKEN_VALIDATION_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_TOKEN_VALIDATION_MODE
+            - name: CRAIG__ACTIVE_STATE_BUNDLES
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_ACTIVE_STATE_BUNDLES
+            {{- if eq $name "craig-intake" }}
+            - name: CRAIG_INTAKE__CORS_ORIGINS
+              value: {{ $svc.corsOrigins | quote }}
+            {{- else }}
+            - name: {{ upper (replace "-" "_" $name) }}__CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CORS_ORIGINS
+            {{- end }}
+            - name: CRAIG_STORE__BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_STORE__BACKEND
+            - name: CRAIG_STORE__LOCAL_ROOT
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_STORE__LOCAL_ROOT
+            - name: CRAIG_FIELD_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_FIELD_ENCRYPTION_KEY
+            {{- if ne $name "craig-rules" }}
+            - name: {{ upper (replace "-" "_" $name) }}__RULES_ENGINE_URL
+              value: "http://craig-rules:8001"
+            {{- end }}
+            {{- if ne $name "craig-intake" }}
+            - name: {{ upper (replace "-" "_" $name) }}__CLIENT_ID
+              value: {{ $name | quote }}
+            - name: {{ upper (replace "-" "_" $name) }}__CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_BACKEND_SERVICE_CLIENT_SECRET
+            {{- end }}
+            - name: {{ upper (replace "-" "_" $name) }}__SECURITY_BASE_URL
+              value: "http://craig-security:8007"
+            {{- if eq $name "craig-reporting" }}
+            - name: CRAIG_REPORTING__ENCRYPTION_MODE
+              value: required
+            - name: CRAIG_REPORTING__CASES_BASE_URL
+              value: "http://craig-cases:8002"
+            - name: CRAIG_REPORTING__PLACEMENT_BASE_URL
+              value: "http://craig-placement:8003"
+            - name: CRAIG_REPORTING__FINANCIAL_BASE_URL
+              value: "http://craig-financial:8005"
+            - name: CRAIG_REPORTING__CASES_URL
+              value: "http://craig-cases:8002"
+            - name: CRAIG_REPORTING__PLACEMENT_URL
+              value: "http://craig-placement:8003"
+            - name: CRAIG_REPORTING__FINANCIAL_URL
+              value: "http://craig-financial:8005"
+            {{- end }}
+            {{- if eq $name "craig-financial" }}
+            - name: CRAIG_FINANCIAL__CASES_URL
+              value: "http://craig-cases:8002"
+            - name: CRAIG_FINANCIAL__PLACEMENT_BASE_URL
+              value: "http://craig-placement:8003"
+            - name: CRAIG_FINANCIAL__SUBSIDY_ERR__ENABLED
+              value: "true"
+            - name: CRAIG_FINANCIAL__SUBSIDY_SG__ENABLED
+              value: "true"
+            - name: CRAIG_FINANCIAL__SUBSIDY_IMPORT__ENABLED
+              value: "true"
+            - name: CRAIG_FINANCIAL__SUBSIDY_GENERATOR_INTERVAL_SECONDS
+              value: "3600"
+            {{- end }}
+            {{- if eq $name "craig-intake" }}
+            - name: CRAIG_INTAKE__CASES_URL
+              value: "http://craig-cases:8002"
+            - name: CRAIG_INTAKE__SECURITY_URL
+              value: "http://craig-security:8007"
+            - name: CRAIG_INTAKE__PUBLIC_RATE_LIMIT
+              value: {{ $svc.publicRateLimit | quote }}
+            - name: CRAIG_INTAKE__TRUSTED_PROXIES
+              value: {{ $svc.trustedProxies | quote }}
+            - name: CRAIG_INTAKE__CLIENT_ID
+              value: "craig-intake"
+            - name: CRAIG_INTAKE__CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_INTAKE__CLIENT_SECRET
+            - name: CRAIG_INTAKE__IP_HASH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_INTAKE__IP_HASH_SECRET
+            {{- end }}
+            {{- if hasKey $svc "bodyLimit" }}
+            - name: {{ upper (replace "-" "_" $name) }}__BODY_LIMIT
+              value: {{ $svc.bodyLimit | quote }}
+            {{- end }}
+            {{- if hasKey $svc "rateLimitRpm" }}
+            - name: {{ upper (replace "-" "_" $name) }}__RATE_LIMIT_RPM
+              value: {{ $svc.rateLimitRpm | quote }}
+            {{- end }}
+            {{- if hasKey $svc "evalTimeoutMs" }}
+            - name: {{ upper (replace "-" "_" $name) }}__EVAL_TIMEOUT_MS
+              value: {{ $svc.evalTimeoutMs | quote }}
+            {{- end }}
+            {{- if hasKey $svc "decisionRefreshSeconds" }}
+            - name: {{ upper (replace "-" "_" $name) }}__DECISION_REFRESH_SECONDS
+              value: {{ $svc.decisionRefreshSeconds | quote }}
+            {{- end }}
+            {{- if hasKey $svc "encryptionMode" }}
+            - name: {{ upper (replace "-" "_" $name) }}__ENCRYPTION_MODE
+              value: {{ $svc.encryptionMode | quote }}
+            {{- end }}
+            {{- if hasKey $svc "detectionIntervalSecs" }}
+            - name: {{ upper (replace "-" "_" $name) }}__DETECTION_INTERVAL_SECS
+              value: {{ $svc.detectionIntervalSecs | quote }}
+            {{- end }}
+            {{- range $key, $value := $svc.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml $root.Values.appResources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ $svc.port }}
+            periodSeconds: 10
+            failureThreshold: 12
+          volumeMounts:
+            - name: object-store
+              mountPath: {{ $root.Values.objectStore.localRoot }}
+      volumes:
+        - name: object-store
+          emptyDir: {}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: craig-web
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  ports:
+    - name: http
+      port: {{ (index .Values.services "craig-web").port }}
+      targetPort: {{ (index .Values.services "craig-web").port }}
+  selector:
+    app.kubernetes.io/name: craig-web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: craig-web
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  progressDeadlineSeconds: 1500
+  replicas: {{ (index .Values.services "craig-web").replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: craig-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: craig-web
+    spec:
+      {{- include "craig.imagePullSecrets" . | nindent 6 }}
+      initContainers:
+        - name: wait-for-keycloak
+          image: {{ include "craig.image" (dict "Values" .Values "name" "craig-seed") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://craig-keycloak:8080/realms/craig >/dev/null; do
+                sleep 3
+              done
+        {{- range $dep := (index .Values.services "craig-web").waitFor }}
+        {{- $depName := index (splitList ":" $dep) 0 }}
+        {{- $depSvc := index $.Values.services $depName }}
+        {{- if or (not $depSvc) (ne $depSvc.enabled false) }}
+        - name: wait-for-{{ replace ":" "-" $dep }}
+          image: {{ include "craig.image" (dict "Values" $.Values "name" "craig-seed") | quote }}
+          imagePullPolicy: {{ $.Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://{{ $dep }}/readyz >/dev/null; do
+                sleep 3
+              done
+        {{- end }}
+        {{- end }}
+        {{- if and .Values.seed.enabled .Values.mockServer.enabled }}
+        - name: wait-for-mock-server
+          image: {{ include "craig.image" (dict "Values" .Values "name" "craig-seed") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://mock-server:9090/health >/dev/null; do
+                sleep 3
+              done
+        {{- end }}
+        {{- if .Values.seed.enabled }}
+        - name: seed
+          image: {{ include "craig.image" (dict "Values" .Values "name" "craig-seed") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            - name: PGHOST
+              value: {{ include "craig.postgresHost" . | quote }}
+            - name: PGUSER
+              value: {{ .Values.postgres.user | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: POSTGRES_PASSWORD
+            - name: CRAIG_SEED__ENCRYPTION_MODE
+              value: required
+            - name: CRAIG_FIELD_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_FIELD_ENCRYPTION_KEY
+            - name: CRAIG_SEED
+              value: {{ .Values.seed.randomSeed | quote }}
+            - name: CRAIG_FAMILIES
+              value: {{ .Values.seed.families | quote }}
+            - name: CRAIG__ACTIVE_STATE_BUNDLES
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_ACTIVE_STATE_BUNDLES
+            - name: KEYCLOAK_INTERNAL_URL
+              value: "http://craig-keycloak:8080"
+            - name: RULES_INTERNAL_URL
+              value: "http://craig-rules:8001"
+            - name: CASES_INTERNAL_URL
+              value: "http://craig-cases:8002"
+        {{- end }}
+      containers:
+        - name: craig-web
+          image: {{ include "craig.image" (dict "Values" .Values "name" "craig-web") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: craig-secrets
+          ports:
+            - containerPort: {{ (index .Values.services "craig-web").port }}
+          env:
+            - name: CRAIG_WEB__PORT
+              value: {{ (index .Values.services "craig-web").port | quote }}
+            - name: CRAIG_WEB__KEYCLOAK_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_ISSUER
+            - name: CRAIG_WEB__KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_URL
+            - name: CRAIG_WEB__OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_ISSUER
+            - name: CRAIG_WEB__OIDC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_URL
+            - name: CRAIG_WEB__OIDC_INTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: KEYCLOAK_URL
+            - name: CRAIG_WEB__ADMIN_UNIT_LABEL
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_ADMIN_UNIT_LABEL
+            - name: CRAIG__ACTIVE_STATE_BUNDLES
+              valueFrom:
+                configMapKeyRef:
+                  name: craig-config
+                  key: CRAIG_ACTIVE_STATE_BUNDLES
+            - name: CRAIG_WEB__KEYCLOAK_CLIENT_ID
+              value: {{ (index .Values.services "craig-web").keycloakClientId | quote }}
+            - name: CRAIG_WEB__CLIENT_ID
+              value: "craig-web"
+            - name: CRAIG_WEB__CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_BACKEND_SERVICE_CLIENT_SECRET
+            - name: CRAIG_WEB__KEYCLOAK_REDIRECT_URI
+              value: {{ printf "%s/auth/callback" (include "craig.webExternalUrl" .) | quote }}
+            - name: CRAIG_WEB__SESSION_SECURE
+              value: {{ ternary "true" "false" (eq .Values.global.externalScheme "https") | quote }}
+            - name: CRAIG_WEB__SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: CRAIG_WEB__SESSION_SECRET
+            - name: CRAIG_WEB__COMPOSITION_URL
+              value: "http://craig-composition:8009"
+            - name: CRAIG_WEB__RULES_URL
+              value: "http://craig-rules:8001"
+            - name: CRAIG_WEB__CASES_URL
+              value: "http://craig-cases:8002"
+            - name: CRAIG_WEB__PLACEMENT_URL
+              value: "http://craig-placement:8003"
+            - name: CRAIG_WEB__EXCHANGE_URL
+              value: "http://craig-exchange:8004"
+            - name: CRAIG_WEB__FINANCIAL_URL
+              value: "http://craig-financial:8005"
+            - name: CRAIG_WEB__SECURITY_URL
+              value: "http://craig-security:8007"
+            - name: CRAIG_WEB__INTAKE_URL
+              value: "http://craig-intake:8008"
+            - name: CRAIG_WEB__REPORTING_URL
+              value: "http://craig-reporting:8006"
+            - name: CRAIG_WEB__PLUGIN_ALLOWED_HOSTS
+              value: "craig-cases"
+            - name: CRAIG_WEB__THEME
+              value: {{ (index .Values.services "craig-web").theme | quote }}
+            - name: CRAIG_WEB__BRANDING_AGENCY
+              value: {{ (index .Values.services "craig-web").brandingAgency | quote }}
+            - name: CRAIG_WEB__BRANDING_APP_NAME
+              value: {{ (index .Values.services "craig-web").brandingAppName | quote }}
+          resources:
+            {{- toYaml .Values.appResources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ (index .Values.services "craig-web").port }}
+            periodSeconds: 10
+            failureThreshold: 12
+{{- if .Values.mockServer.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-server
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  ports:
+    - name: http
+      port: {{ .Values.mockServer.port }}
+      targetPort: {{ .Values.mockServer.port }}
+  selector:
+    app.kubernetes.io/name: mock-server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-server
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  progressDeadlineSeconds: 1500
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-server
+    spec:
+      {{- include "craig.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: mock-server
+          image: {{ include "craig.image" (dict "Values" .Values "name" "craig-mock-server") | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.mockServer.port }}
+          env:
+            - name: MOCK_PORT
+              value: {{ .Values.mockServer.port | quote }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.mockServer.port }}
+            periodSeconds: 10
+            failureThreshold: 12
+{{- end }}

@@ -1,0 +1,74 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: craig-postgres
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  selector:
+    app.kubernetes.io/name: craig-postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: craig-postgres
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: craig-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: craig-postgres
+    spec:
+      {{- include "craig.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image | quote }}
+          imagePullPolicy: IfNotPresent
+          {{- if .Values.postgres.args }}
+          args:
+            {{- toYaml .Values.postgres.args | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+          resources:
+            requests:
+              cpu: 250m
+              memory: 2Gi
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgres.user | quote }}
+                - -h
+                - 127.0.0.1
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+{{- end }}

@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+work="$root/.work"
+source_dir="$work/source"
+mkdir -p "$work"
+export AWS_ACCOUNT_ID=533331890675 AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
+export CRAIG_NAMESPACE=craig-dev CRAIG_HELM_RELEASE=craig ECR_PREFIX=craig
+export CRAIG_CHART_DIR="$root/deploy/kubernetes/craig"
+export CRAIG_VALUES_FILE="$root/values-org.yaml"
+export CRAIG_ECR_VALUES_FILE="$work/values-ecr.generated.yaml"
+export CRAIG_EXTRA_VALUES_FILE="$CRAIG_ECR_VALUES_FILE"
+export CRAIG_PULL_SOURCE=0 CRAIG_OVERLAY_DEPLOY_FILES=0 CRAIG_CREATE_NAMESPACE=0
+export CRAIG_WEB_FEATURES=plugin-example,plugin-ssa-screening
+export CRAIG_APP_HOST=sandportal.dhs.ga.gov CRAIG_KEYCLOAK_HOST=sandportal.dhs.ga.gov
+export CRAIG_INTAKE_HOST=sandshines.dhs.ga.gov CRAIG_CASES_INTERNAL_HOST=cases.internal.example.gov
+export CRAIG_EXTERNAL_SCHEME=https CRAIG_TLS_ENABLED=false CRAIG_SEED_ENABLED=true
+export CRAIG_TGB_ENABLED=false CRAIG_PUBLIC_TGB_ENABLED=false
+export CRAIG_INGRESS_CLASS=nginx-craig-dev CRAIG_INTERNAL_INGRESS_CLASS=nginx-craig-dev
+unset GITLAB_USERNAME GITLAB_TOKEN
+repo=https://gitlab.com/gadhs/application/ccwis/craig.git
+context=arn:aws:eks:us-east-1:533331890675:cluster/shines-dev-eks-cluster
+account() {
+  [[ $(aws sts get-caller-identity --query Account --output text) == "$AWS_ACCOUNT_ID" ]] || { echo 'Wrong AWS account; refusing.' >&2; exit 1; }
+}
+connect() {
+  account
+  # Read the server's existing context into an isolated file; never change its default context.
+  kubectl --context "$context" config view --raw --minify --flatten > "$work/kubeconfig.next"
+  mv "$work/kubeconfig.next" "$work/kubeconfig"
+  export KUBECONFIG="$work/kubeconfig"
+  kubectl get namespace "$CRAIG_NAMESPACE" >/dev/null
+}
+repositories() {
+  local repos=() service
+  for service in rules cases placement exchange financial reporting security intake composition web seed mock-server keycloak-baked postgres rabbitmq; do
+    repos+=("craig/craig-$service")
+  done
+  aws ecr describe-repositories --region "$AWS_REGION" --repository-names "${repos[@]}" --query 'repositories[].repositoryName' --output text
+}
+verify_build() {
+  python3 - "$work" <<'PY'
+import hashlib,json,pathlib,subprocess,sys
+w=pathlib.Path(sys.argv[1]); receipt=json.loads((w/'build.json').read_text())
+sha=subprocess.check_output(['git','-C',str(w/'source'),'rev-parse','HEAD'],text=True).strip()
+assert sha==receipt['source'], 'Source changed since build; rebuild first'
+assert hashlib.sha256((w/'values-ecr.generated.yaml').read_bytes()).hexdigest()==receipt['values_sha256'], 'Build values changed or build incomplete; rebuild first'
+PY
+}
+preflight() {
+    for tool in aws docker git helm kubectl python3 openssl; do
+      command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; return 1; }
+    done
+    python3 -c 'import yaml' || { echo 'Python dependency missing: PyYAML' >&2; return 1; }
+    docker info >/dev/null
+    docker buildx version >/dev/null
+    git lfs version >/dev/null
+    helm lint "$CRAIG_CHART_DIR" -f "$CRAIG_VALUES_FILE"
+    connect
+    repositories
+    python3 -c 'import yaml'
+    kubectl get ingressclass nginx-craig-dev >/dev/null
+    helm list -n craig-dev
+}
+
+fetch() {
+    if [[ ! -d "$source_dir/.git" ]]; then
+      git clone --depth 1 --single-branch --branch main "$repo" "$source_dir"
+    else
+      [[ -z $(git -C "$source_dir" status --porcelain) ]] || { echo 'Source has local changes.' >&2; exit 1; }
+      git -C "$source_dir" fetch --depth 1 origin main
+      git -C "$source_dir" checkout --detach FETCH_HEAD
+    fi
+    git -C "$source_dir" rev-parse HEAD
+}
+
+build() {
+    account
+    repositories
+    [[ -z $(git -C "$source_dir" status --porcelain) ]] || { echo 'Source must be clean.' >&2; exit 1; }
+    export IMAGE_TAG="$(git -C "$source_dir" rev-parse HEAD)-$(date -u +%Y%m%d%H%M%S)"
+    cd "$source_dir"
+    bash "$root/scripts/build-push-ecr-images.sh"
+    python3 - "$work" <<'PY'
+import hashlib,json,pathlib,subprocess,sys
+w=pathlib.Path(sys.argv[1]); sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+(w/'build.json').write_text(json.dumps({'source':sha,'values_sha256':hashlib.sha256((w/'values-ecr.generated.yaml').read_bytes()).hexdigest()}))
+PY
+}
+
+reset_deploy() {
+    [[ ${2:-} == --discard-test-data ]] || { echo 'Usage: ./craig reset-deploy --discard-test-data (erases CRAIG test data)' >&2; exit 2; }
+    verify_build
+    connect
+    python3 -c 'import yaml'
+    kubectl get ingressclass nginx-craig-dev >/dev/null
+    helm template craig "$CRAIG_CHART_DIR" -n craig-dev -f "$CRAIG_VALUES_FILE" -f "$CRAIG_EXTRA_VALUES_FILE" | python3 "$root/scripts/check-manifest.py"
+    releases=$(helm list -n craig-dev --all --filter '^craig$' -o json)
+    if python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin) else 1)' <<< "$releases"; then
+      helm get manifest craig -n craig-dev > "$work/previous-manifest.yaml"
+      python3 "$root/scripts/check-manifest.py" < "$work/previous-manifest.yaml"
+      helm uninstall craig -n craig-dev --no-hooks --wait --timeout 15m
+    fi
+    cd "$source_dir"
+    bash "$root/scripts/helm-deploy-craig-eks-gitlab.sh" --wait --timeout 25m --values "$root/values-infra-only.yaml"
+    bash "$root/scripts/helm-deploy-craig-eks-gitlab.sh" --wait --timeout 25m
+}
+
+status() {
+    connect
+    helm status craig -n craig-dev
+    kubectl get pods,ingress -n craig-dev
+}
+
+operation=${1:-}
+case "$operation" in
+  deploy|reset-deploy)
+    [[ ${2:-} == --discard-test-data && $# == 2 ]] || { echo "Usage: ./craig $operation --discard-test-data (erases CRAIG test data)" >&2; exit 2; }
+    ;;
+esac
+case "$operation" in fetch|build|reset-deploy|deploy|preflight|status)
+  mkdir "$work/operation.lock" 2>/dev/null || { echo 'Another operation is running.' >&2; exit 1; }
+  trap 'rmdir "$work/operation.lock"' EXIT
+esac
+case "$operation" in
+  deploy)
+    for stage in preflight fetch build; do
+      echo "==> $stage"
+      "$stage"
+    done
+    echo '==> reset and deploy'
+    reset_deploy reset-deploy --discard-test-data
+    echo '==> verify deployment'
+    status
+    echo 'Deployment complete: https://sandportal.dhs.ga.gov'
+    ;;
+  preflight) preflight ;;
+  fetch) fetch ;;
+  build) build ;;
+  reset-deploy) reset_deploy "$@" ;;
+  status) status ;;
+  *) echo 'Usage: ./craig <deploy --discard-test-data|preflight|fetch|build|reset-deploy --discard-test-data|status>' >&2; exit 2 ;;
+esac

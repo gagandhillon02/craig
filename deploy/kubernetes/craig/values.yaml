@@ -1,0 +1,202 @@
+namespaceOverride: ""
+
+global:
+  jurisdiction: georgia
+  adminUnitLabel: County
+  tokenValidationMode: jws
+  externalScheme: https
+  hosts:
+    keycloak: auth.example.gov
+    app: craig.example.gov
+    casesInternal: cases.internal.example.gov
+    intake: report.example.gov
+  ingress:
+    enabled: true
+    externalClassName: nginx
+    internalClassName: nginx-internal
+    tls:
+      enabled: true
+      keycloakSecretName: craig-keycloak-tls
+      appSecretName: craig-app-tls
+      casesSecretName: craig-cases-internal-tls
+      intakeSecretName: craig-intake-tls
+
+images:
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+  repositoryPrefix: registry.example.gov/craig
+  tag: latest
+
+secrets:
+  postgresPassword: craig
+  rabbitmqPassword: craig
+  webSessionSecret: change-this-session-secret-change-this-session-secret-change-this-session-secret
+  fieldEncryptionKey: ""
+  reportingFieldEncryptionKey: ""
+  intakeClientSecret: change-this-intake-client-secret
+  intakeIpHashSecret: change-this-ip-hash-secret
+  backendServiceClientSecret: change-this-backend-service-secret
+
+actorKeys: {}
+
+postgres:
+  enabled: true
+  image: registry.example.gov/craig/craig-postgres:latest
+  args:
+    - postgres
+    - -c
+    - max_connections=250
+    - -c
+    - shared_buffers=256MB
+    - -c
+    - checkpoint_timeout=15min
+    - -c
+    - max_wal_size=2GB
+  useDevstackRoles: true
+  user: craig
+  database: craig
+
+rabbitmq:
+  enabled: true
+  image: registry.example.gov/craig/craig-rabbitmq:latest
+  user: craig
+
+keycloak:
+  enabled: true
+  image: registry.example.gov/craig/craig-keycloak-baked:latest
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1536Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  ingress:
+    paths:
+      - /
+  adminUser: admin
+  adminPassword: admin
+
+targetGroupBindings:
+  enabled: false
+  publicNginx:
+    enabled: false
+    namespace: ingress-nginx
+    name: nginx-public
+    serviceName: ingress-nginx-controller
+    servicePort: 80
+    targetGroupARN: ""
+  internalNginx:
+    enabled: false
+    namespace: ingress-nginx
+    name: nginx-internal
+    serviceName: ingress-nginx-controller
+    servicePort: 80
+    targetGroupARN: ""
+
+seed:
+  enabled: false
+  families: "12"
+  randomSeed: "42"
+
+objectStore:
+  backend: local
+  localRoot: /var/lib/craig-store
+  storage: 10Gi
+
+mockServer:
+  enabled: false
+  port: 9090
+
+services:
+  craig-rules:
+    port: 8001
+    replicas: 1
+    evalTimeoutMs: "5000"
+    decisionRefreshSeconds: "15"
+    rateLimitRpm: "100000"
+  craig-cases:
+    port: 8002
+    replicas: 1
+    bodyLimit: "52428800"
+    encryptionMode: required
+    rateLimitRpm: "100000"
+    waitFor:
+      - craig-rules:8001
+  craig-placement:
+    port: 8003
+    replicas: 1
+    bodyLimit: "52428800"
+    rateLimitRpm: "100000"
+    waitFor:
+      - craig-rules:8001
+  craig-exchange:
+    port: 8004
+    replicas: 1
+    bodyLimit: "52428800"
+    rateLimitRpm: "100000"
+    waitFor:
+      - craig-rules:8001
+  craig-financial:
+    port: 8005
+    replicas: 1
+    rateLimitRpm: "100000"
+    waitFor:
+      - craig-rules:8001
+      - craig-placement:8003
+  craig-reporting:
+    port: 8006
+    replicas: 1
+    rateLimitRpm: "100000"
+    waitFor:
+      - craig-rules:8001
+  craig-security:
+    port: 8007
+    replicas: 1
+    detectionIntervalSecs: "0"
+    rateLimitRpm: "100000"
+    waitFor:
+      - craig-rules:8001
+  craig-intake:
+    port: 8008
+    replicas: 1
+    publicRateLimit: "100000"
+    corsOrigins: "*"
+    trustedProxies: "127.0.0.1/32,::1/128"
+    waitFor:
+      - craig-cases:8002
+      - craig-security:8007
+  craig-composition:
+    enabled: false
+    port: 8009
+    replicas: 1
+    rateLimitRpm: "100000"
+    waitFor:
+      - craig-rules:8001
+  craig-web:
+    port: 8080
+    replicas: 1
+    keycloakClientId: craig-ui
+    theme: georgia-orchard
+    brandingAgency: GEORGIA DEPARTMENT OF HUMAN SERVICES
+    brandingAppName: CRAIG
+    waitFor:
+      - craig-rules:8001
+      - craig-cases:8002
+      - craig-placement:8003
+      - craig-exchange:8004
+      - craig-financial:8005
+      - craig-reporting:8006
+      - craig-security:8007
+      - craig-intake:8008
+
+localGateway:
+  enabled: false
+  image: nginx:1.28-alpine
+  proxyBufferSize: 64k
+  proxyBusyBuffersSize: 128k
+
+appResources:
+  requests:
+    cpu: 250m
+    memory: 1Gi

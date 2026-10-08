@@ -1,0 +1,110 @@
+{{- if .Values.global.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: craig-keycloak
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  ingressClassName: {{ .Values.global.ingress.externalClassName | quote }}
+  {{- if .Values.global.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.global.hosts.keycloak | quote }}
+      secretName: {{ .Values.global.ingress.tls.keycloakSecretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.global.hosts.keycloak | quote }}
+      http:
+        paths:
+          {{- range .Values.keycloak.ingress.paths }}
+          - path: {{ . | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: craig-keycloak
+                port:
+                  number: 8080
+          {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: craig-app
+  namespace: {{ include "craig.namespace" . }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "64k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "8"
+    nginx.ingress.kubernetes.io/proxy-busy-buffers-size: "128k"
+spec:
+  ingressClassName: {{ .Values.global.ingress.externalClassName | quote }}
+  {{- if .Values.global.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.global.hosts.app | quote }}
+      secretName: {{ .Values.global.ingress.tls.appSecretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.global.hosts.app | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: craig-web
+                port:
+                  number: {{ (index .Values.services "craig-web").port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: craig-intake-public
+  namespace: {{ include "craig.namespace" . }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "30m"
+spec:
+  ingressClassName: {{ .Values.global.ingress.externalClassName | quote }}
+  {{- if .Values.global.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.global.hosts.intake | quote }}
+      secretName: {{ .Values.global.ingress.tls.intakeSecretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.global.hosts.intake | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: craig-intake
+                port:
+                  number: {{ (index .Values.services "craig-intake").port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: craig-cases-internal
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  ingressClassName: {{ .Values.global.ingress.internalClassName | quote }}
+  {{- if .Values.global.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.global.hosts.casesInternal | quote }}
+      secretName: {{ .Values.global.ingress.tls.casesSecretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.global.hosts.casesInternal | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: craig-cases
+                port:
+                  number: {{ (index .Values.services "craig-cases").port }}
+
+{{- end }}

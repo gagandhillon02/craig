@@ -1,0 +1,61 @@
+{{- if .Values.keycloak.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: craig-keycloak
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/name: craig-keycloak
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: craig-keycloak
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  progressDeadlineSeconds: 1500
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: craig-keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: craig-keycloak
+    spec:
+      {{- include "craig.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: keycloak
+          image: {{ .Values.keycloak.image | quote }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          args: ["start-dev", "--import-realm"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: {{ .Values.keycloak.adminUser | quote }}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: craig-secrets
+                  key: KEYCLOAK_ADMIN_PASSWORD
+            - name: KC_HOSTNAME
+              value: {{ printf "%s://%s" .Values.global.externalScheme .Values.global.hosts.keycloak | quote }}
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+          resources:
+            {{- toYaml .Values.keycloak.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /realms/craig
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 12
+{{- end }}

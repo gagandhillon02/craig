@@ -1,0 +1,48 @@
+global:
+  externalScheme: https
+  hosts:
+    app: sandportal.dhs.ga.gov
+    keycloak: sandportal.dhs.ga.gov
+    intake: sandshines.dhs.ga.gov
+    casesInternal: cases.internal.example.gov
+  ingress:
+    enabled: true
+    externalClassName: nginx-craig-dev
+    internalClassName: nginx-craig-dev
+    tls:
+      enabled: false
+localGateway:
+  enabled: false
+seed:
+  enabled: true
+services:
+  craig-composition:
+    enabled: true
+  craig-cases:
+    extraEnv:
+      CRAIG_CASES__EXCHANGE_BASE_URL: http://craig-exchange:8004
+  craig-placement:
+    extraEnv:
+      CRAIG_PLACEMENT__CASES_BASE_URL: http://craig-cases:8002
+  craig-exchange:
+    extraEnv:
+      CRAIG_EXCHANGE__CASES_BASE_URL: http://craig-cases:8002
+      CRAIG_EXCHANGE__RETENTION_ARCHIVE__HOT_WINDOW_DAYS: "365"
+  craig-web:
+    waitFor:
+      - craig-rules:8001
+      - craig-cases:8002
+      - craig-placement:8003
+      - craig-exchange:8004
+      - craig-financial:8005
+      - craig-reporting:8006
+      - craig-security:8007
+      - craig-intake:8008
+      - craig-composition:8009
+keycloak:
+  ingress:
+    paths: ["/realms", "/resources"]
+mockServer:
+  enabled: true
+targetGroupBindings:
+  enabled: false

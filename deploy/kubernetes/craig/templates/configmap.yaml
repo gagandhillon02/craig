@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: craig-config
+  namespace: {{ include "craig.namespace" . }}
+data:
+  KEYCLOAK_ISSUER: {{ include "craig.keycloakIssuer" . | quote }}
+  KEYCLOAK_URL: "http://craig-keycloak:8080/realms/craig"
+  CORS_ORIGINS: {{ printf "%s://%s" .Values.global.externalScheme .Values.global.hosts.app | quote }}
+  CRAIG_STORE__BACKEND: {{ .Values.objectStore.backend | quote }}
+  CRAIG_STORE__LOCAL_ROOT: {{ .Values.objectStore.localRoot | quote }}
+  CRAIG_JURISDICTION: {{ .Values.global.jurisdiction | quote }}
+  CRAIG_ADMIN_UNIT_LABEL: {{ .Values.global.adminUnitLabel | quote }}
+  CRAIG_TOKEN_VALIDATION_MODE: {{ .Values.global.tokenValidationMode | quote }}
+  CRAIG_ACTIVE_STATE_BUNDLES: {{ .Values.global.jurisdiction | quote }}

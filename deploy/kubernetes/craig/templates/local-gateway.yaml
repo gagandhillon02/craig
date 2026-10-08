@@ -1,0 +1,87 @@
+{{- if .Values.localGateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: craig-local-gateway
+  namespace: {{ include "craig.namespace" . }}
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      client_max_body_size 30m;
+      # OIDC callback sets session cookies larger than NGINX's default header buffer.
+      proxy_buffer_size {{ .Values.localGateway.proxyBufferSize }};
+      proxy_buffers 8 {{ .Values.localGateway.proxyBufferSize }};
+      proxy_busy_buffers_size {{ .Values.localGateway.proxyBusyBuffersSize }};
+      location = /healthz { return 200 "ok"; }
+      location /realms/ {
+        proxy_pass http://craig-keycloak:8080;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_set_header X-Forwarded-Port 8080;
+      }
+      location /resources/ {
+        proxy_pass http://craig-keycloak:8080;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_set_header X-Forwarded-Port 8080;
+      }
+      location / {
+        proxy_pass http://craig-web:8080;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto http;
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: craig-local-gateway
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  selector:
+    app.kubernetes.io/name: craig-local-gateway
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: craig-local-gateway
+  namespace: {{ include "craig.namespace" . }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: craig-local-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: craig-local-gateway
+      annotations:
+        config-checksum: {{ .Values.localGateway | toJson | sha256sum }}
+    spec:
+      containers:
+        - name: nginx
+          image: {{ .Values.localGateway.image | quote }}
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: craig-local-gateway
+{{- end }}

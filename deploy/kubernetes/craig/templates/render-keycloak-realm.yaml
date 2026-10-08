@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: craig-keycloak-build-metadata
+  namespace: {{ include "craig.namespace" . }}
+data:
+  webExternalUrl: {{ include "craig.webExternalUrl" . | quote }}
+  intakeExternalUrl: {{ printf "%s://%s" .Values.global.externalScheme .Values.global.hosts.intake | quote }}
+  keycloakIssuer: {{ include "craig.keycloakIssuer" . | quote }}
+  {{- if .Values.keycloakRealm }}
+  craig-realm.json: |
+{{ tpl .Values.keycloakRealm . | indent 4 }}
+  {{- end }}

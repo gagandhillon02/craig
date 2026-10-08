@@ -1,0 +1,12 @@
+# First deployment phase: settle ephemeral infrastructure before running migrations.
+services:
+  craig-rules: {replicas: 0}
+  craig-cases: {replicas: 0}
+  craig-placement: {replicas: 0}
+  craig-exchange: {replicas: 0}
+  craig-financial: {replicas: 0}
+  craig-reporting: {replicas: 0}
+  craig-security: {replicas: 0}
+  craig-intake: {replicas: 0}
+  craig-composition: {replicas: 0}
+  craig-web: {replicas: 0}

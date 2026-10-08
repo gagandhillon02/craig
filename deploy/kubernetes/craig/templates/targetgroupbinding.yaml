@@ -1,0 +1,27 @@
+{{- if and .Values.targetGroupBindings.enabled .Values.targetGroupBindings.publicNginx.enabled }}
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: {{ .Values.targetGroupBindings.publicNginx.name }}
+  namespace: {{ .Values.targetGroupBindings.publicNginx.namespace }}
+spec:
+  targetType: ip
+  serviceRef:
+    name: {{ .Values.targetGroupBindings.publicNginx.serviceName }}
+    port: {{ .Values.targetGroupBindings.publicNginx.servicePort }}
+  targetGroupARN: {{ required "targetGroupBindings.publicNginx.targetGroupARN is required" .Values.targetGroupBindings.publicNginx.targetGroupARN | quote }}
+{{- end }}
+{{- if and .Values.targetGroupBindings.enabled .Values.targetGroupBindings.internalNginx.enabled }}
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: {{ .Values.targetGroupBindings.internalNginx.name }}
+  namespace: {{ .Values.targetGroupBindings.internalNginx.namespace }}
+spec:
+  targetType: ip
+  serviceRef:
+    name: {{ .Values.targetGroupBindings.internalNginx.serviceName }}
+    port: {{ .Values.targetGroupBindings.internalNginx.servicePort }}
+  targetGroupARN: {{ required "targetGroupBindings.internalNginx.targetGroupARN is required" .Values.targetGroupBindings.internalNginx.targetGroupARN | quote }}
+{{- end }}

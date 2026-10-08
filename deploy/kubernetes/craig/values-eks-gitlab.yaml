@@ -1,0 +1,13 @@
+global:
+  ingress:
+    tls:
+      enabled: false
+
+keycloak:
+  ingress:
+    paths:
+      - /realms
+      - /resources
+
+seed:
+  enabled: true
