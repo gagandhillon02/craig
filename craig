@@ -48,6 +48,27 @@ assert sha==receipt['source'], 'Source changed since build; rebuild first'
 assert hashlib.sha256((w/'values-ecr.generated.yaml').read_bytes()).hexdigest()==receipt['values_sha256'], 'Build values changed or build incomplete; rebuild first'
 PY
 }
+ingress_class() {
+  local out
+  out=$(kubectl get ingressclass nginx-craig-dev 2>&1 >/dev/null) && return 0
+  # Namespace-scoped roles cannot read cluster-scoped IngressClasses; the deploy does not need to.
+  [[ $out == *Forbidden* ]] || { echo "$out" >&2; return 1; }
+  echo 'Warning: cannot read IngressClass nginx-craig-dev (cluster scope); continuing.' >&2
+}
+permissions() {
+  local verb resource missing=0
+  for resource in deployments services secrets configmaps ingresses; do
+    for verb in get list watch create update patch delete; do
+      [[ $(kubectl auth can-i "$verb" "$resource" -n craig-dev 2>/dev/null) == yes ]] || { echo "Missing Kubernetes permission: $verb $resource in craig-dev" >&2; missing=1; }
+    done
+  done
+  for resource in pods replicasets; do
+    for verb in get list watch; do
+      [[ $(kubectl auth can-i "$verb" "$resource" -n craig-dev 2>/dev/null) == yes ]] || { echo "Missing Kubernetes permission: $verb $resource in craig-dev" >&2; missing=1; }
+    done
+  done
+  return "$missing"
+}
 preflight() {
     for tool in aws docker git helm kubectl python3 openssl; do
       command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; return 1; }
@@ -59,7 +80,8 @@ preflight() {
     connect
     repositories
     python3 -c 'import yaml'
-    kubectl get ingressclass nginx-craig-dev >/dev/null
+    ingress_class
+    permissions
     helm list -n craig-dev
 }
 
@@ -98,7 +120,7 @@ reset_deploy() {
     verify_build
     connect
     python3 -c 'import yaml'
-    kubectl get ingressclass nginx-craig-dev >/dev/null
+    ingress_class
     helm template craig "$CRAIG_CHART_DIR" -n craig-dev -f "$CRAIG_VALUES_FILE" -f "$CRAIG_EXTRA_VALUES_FILE" | python3 "$root/scripts/check-manifest.py"
     releases=$(helm list -n craig-dev --all --filter '^craig$' -o json)
     if python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin) else 1)' <<< "$releases"; then
